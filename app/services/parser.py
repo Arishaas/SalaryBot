@@ -9,3 +9,7 @@ def parse_products(url: str):
         return "wb", "456"
 
     raise ValueError("Unexpected marketplace")
+
+
+def get_price(url: str) -> float:
+    return 100.0
