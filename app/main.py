@@ -11,6 +11,6 @@ app.include_router(products.router)
 app.include_router(products.router)
 
 
-@app.get("/")
+@app.get("/test")
 def root():
     return {"message": "API работает"}

@@ -12,4 +12,4 @@ def parse_products(url: str):
 
 
 def get_price(url: str) -> float:
-    return 100.0
+    return 80.00
