@@ -8,13 +8,15 @@ from app.routers import products
 from app.bot import create_bot, create_dispatcher
 from app.scheduler import create_scheduler
 
-import app.models.user  # noqa: F401
-import app.models.product  # noqa: F401
-import app.models.price_history  # noqa: F401
+import app.models.user
+import app.models.product
+import app.models.price_history
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    Base.metadata.create_all(bind=engine)
+
     bot = create_bot()
     dp = create_dispatcher()
     scheduler = create_scheduler(bot)
@@ -37,8 +39,6 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Price Tracker Bot", lifespan=lifespan)
-
-Base.metadata.create_all(bind=engine)
 
 app.include_router(products.router)
 

@@ -33,7 +33,7 @@ def marketplace_label(marketplace: str) -> str:
 
 
 def _extract_ozon_id(text: str) -> str | None:
-    match = re.search(r"ozon\.(?:ru|com)/[^?\s]*/?(?:product/)?[^/\s]*-(\d+)", text, re.I)
+    match = re.search(r"ozon\.(?:ru|com)/.*-(\d+)", text, re.I)
     if match:
         return match.group(1)
     match = re.search(r"ozon\.(?:ru|com)/product/(\d+)", text, re.I)
@@ -46,31 +46,17 @@ def _extract_wb_id(text: str) -> str | None:
     match = re.search(r"wildberries\.(?:ru|by|kz)/catalog/(\d+)", text, re.I)
     if match:
         return match.group(1)
-    match = re.search(r"wb\.ru/catalog/(\d+)", text, re.I)
-    if match:
-        return match.group(1)
     return None
 
 
 def _extract_yandex_id(text: str) -> str | None:
-    match = re.search(
-        r"market\.yandex\.(?:ru|by|kz|uz)/(?:product(?:--[^/?\s]+)?|card/[^/?\s]+)/(\d+)",
-        text,
-        re.I,
-    )
-    if match:
-        return match.group(1)
-    match = re.search(r"market\.yandex\.(?:ru|by|kz|uz)/product/(\d+)", text, re.I)
-    if match:
-        return match.group(1)
-    return None
+    match = re.search(r"market\.yandex\.(?:ru|by|kz|uz)/.*?/(\d+)", text, re.I)
+    return match.group(1) if match else None
 
 
 def _extract_aliexpress_id(text: str) -> str | None:
-    match = re.search(r"aliexpress\.(?:ru|com)/item/(\d+)\.html", text, re.I)
-    if match:
-        return match.group(1)
-    return None
+    match = re.search(r"aliexpress\.(?:ru|com)/item/(\d+)", text, re.I)
+    return match.group(1) if match else None
 
 
 def _build_product(marketplace: str, product_id: str) -> ParsedProduct:
@@ -80,160 +66,133 @@ def _build_product(marketplace: str, product_id: str) -> ParsedProduct:
         "yandex": f"https://market.yandex.ru/product--/{product_id}",
         "aliexpress": f"https://aliexpress.ru/item/{product_id}.html",
     }
-    return ParsedProduct(marketplace=marketplace, product_id=product_id, url=urls[marketplace])
+    return ParsedProduct(marketplace, product_id, urls[marketplace])
 
 
 def parse_product_input(text: str) -> ParsedProduct:
     text = text.strip()
 
-    extractors = [
+    # ссылки
+    for name, extractor in [
         ("ozon", _extract_ozon_id),
         ("wb", _extract_wb_id),
         ("yandex", _extract_yandex_id),
         ("aliexpress", _extract_aliexpress_id),
-    ]
-    for marketplace, extractor in extractors:
+    ]:
         product_id = extractor(text)
         if product_id:
-            return _build_product(marketplace, product_id)
+            return _build_product(name, product_id)
 
-    prefix_patterns = [
-        (r"^(?:ozon|oz)[:\s-]+(\d+)$", "ozon"),
-        (r"^(?:wb|wildberries)[:\s-]+(\d+)$", "wb"),
-        (r"^(?:yandex|ym|яндекс)[:\s-]+(\d+)$", "yandex"),
-        (r"^(?:aliexpress|ali|ae|али)[:\s-]+(\d+)$", "aliexpress"),
+    # формат ozon:123
+    patterns = [
+        (r"^(ozon|oz):(\d+)$", "ozon"),
+        (r"^(wb):(\d+)$", "wb"),
+        (r"^(yandex|ym):(\d+)$", "yandex"),
+        (r"^(ali|ae):(\d+)$", "aliexpress"),
     ]
-    for pattern, marketplace in prefix_patterns:
-        match = re.match(pattern, text, re.I)
+
+    for pattern, marketplace in patterns:
+        match = re.match(pattern, text)
         if match:
-            return _build_product(marketplace, match.group(1))
+            return _build_product(marketplace, match.group(2))
 
-    if text.isdigit():
-        raise ValueError(
-            "🤔 Укажи маркетплейс: ozon:123, wb:123, yandex:123 или aliexpress:123, "
-            "либо отправь полную ссылку."
-        )
-
-    raise ValueError(
-        "⚠️ Поддерживаются только Ozon, Wildberries, Яндекс Маркет и AliExpress. "
-        "Отправь ссылку или артикул."
-    )
-
-
-def parse_products(url: str) -> tuple[str, str]:
-    parsed = parse_product_input(url)
-    return parsed.marketplace, parsed.product_id
+    raise ValueError("❌ Неверный формат. Отправь ссылку или ozon:123")
 
 
 async def _fetch_page(url: str) -> str:
-    async with httpx.AsyncClient(timeout=15.0, headers=HEADERS, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=15.0, headers=HEADERS) as client:
         response = await client.get(url)
         response.raise_for_status()
         return response.text
 
 
 def _extract_title(html: str) -> str | None:
-    title_match = re.search(r'<h1[^>]*>([^<]+)</h1>', html)
-    if title_match:
-        return title_match.group(1).strip()
-    json_title = re.search(r'"title"\s*:\s*"([^"]+)"', html)
-    return json_title.group(1).strip() if json_title else None
+    match = re.search(r"<h1[^>]*>([^<]+)</h1>", html)
+    return match.group(1).strip() if match else None
 
 
-async def _fetch_wb_price(product_id: str) -> tuple[float, str | None]:
+async def _fetch_wb_price(product_id: str):
     params = {
         "appType": 1,
         "curr": "rub",
-        "dest": -1257786,
-        "spp": 30,
         "nm": product_id,
     }
+
     async with httpx.AsyncClient(timeout=15.0, headers=HEADERS) as client:
-        response = await client.get(WB_API_URL, params=params)
-        response.raise_for_status()
-        data = response.json()
+        r = await client.get(WB_API_URL, params=params)
+        r.raise_for_status()
+        data = r.json()
 
     products = data.get("data", {}).get("products", [])
     if not products:
-        raise ValueError(f"Товар WB {product_id} не найден")
+        raise ValueError("WB товар не найден")
 
     product = products[0]
-    price_kopecks = product.get("salePriceU") or product.get("priceU")
-    if not price_kopecks:
-        raise ValueError(f"Не удалось получить цену WB {product_id}")
 
-    return price_kopecks / 100, product.get("name")
+    price = (
+        product.get("salePriceU")
+        or product.get("priceU")
+        or product.get("clientPriceU")
+    )
+
+    if not price:
+        raise ValueError("WB цена не найдена")
+
+    return price / 100, product.get("name")
 
 
-async def _fetch_ozon_price(url: str) -> tuple[float, str | None]:
+async def _fetch_ozon_price(url: str):
     html = await _fetch_page(url)
 
-    price_match = re.search(
-        r'"price"\s*:\s*"?(\d+(?:\.\d+)?)"?|"finalPrice"\s*:\s*"?(\d+(?:\.\d+)?)"?',
+    match = re.search(
+        r'"price"\s*:\s*"?(\d+(?:\.\d+)?)"?'
+        r'|"finalPrice"\s*:\s*"?(\d+(?:\.\d+)?)"?'
+        r'|"cardPrice"\s*:\s*"?(\d+(?:\.\d+)?)"?',
         html,
     )
-    if not price_match:
-        price_match = re.search(r'data-price="(\d+(?:\.\d+)?)"', html)
-    if not price_match:
-        raise ValueError("Не удалось получить цену с Ozon")
 
-    price_str = price_match.group(1) or price_match.group(2)
-    return float(price_str), _extract_title(html)
+    if not match:
+        raise ValueError("Ozon цена не найдена")
+
+    price = next(filter(None, match.groups()))
+    return float(price), _extract_title(html)
 
 
-async def _fetch_yandex_price(url: str) -> tuple[float, str | None]:
+async def _fetch_yandex_price(url: str):
     html = await _fetch_page(url)
 
-    price_match = re.search(
-        r'"price"\s*:\s*\{[^}]*"value"\s*:\s*(\d+(?:\.\d+)?)',
-        html,
-    )
-    if not price_match:
-        price_match = re.search(r'"price"\s*:\s*(\d+(?:\.\d+)?)', html)
-    if not price_match:
-        price_match = re.search(r'data-auto="price-value"[^>]*>([^<]+)<', html)
-    if not price_match:
-        raise ValueError("Не удалось получить цену с Яндекс Маркета")
+    match = re.search(r'"value"\s*:\s*(\d+(?:\.\d+)?)', html)
 
-    price_str = re.sub(r"[^\d.]", "", price_match.group(1).replace(",", ".").replace("\xa0", ""))
-    return float(price_str), _extract_title(html)
+    if not match:
+        raise ValueError("Яндекс цена не найдена")
+
+    return float(match.group(1)), _extract_title(html)
 
 
-async def _fetch_aliexpress_price(url: str) -> tuple[float, str | None]:
+async def _fetch_aliexpress_price(url: str):
     html = await _fetch_page(url)
 
-    price_match = re.search(
-        r'"minAmount"\s*:\s*\{[^}]*"value"\s*:\s*(\d+(?:\.\d+)?)',
-        html,
-    )
-    if not price_match:
-        price_match = re.search(
-            r'"formattedPrice"\s*:\s*"[^"\d]*([\d\s\xa0,.]+)"',
-            html,
-        )
-    if not price_match:
-        price_match = re.search(r'"price"\s*:\s*"([\d\s,.]+)"', html)
-    if not price_match:
-        raise ValueError("Не удалось получить цену с AliExpress")
+    match = re.search(r'"value"\s*:\s*(\d+(?:\.\d+)?)', html)
 
-    price_str = re.sub(r"[^\d.]", "", price_match.group(1).replace(",", ".").replace("\xa0", ""))
-    return float(price_str), _extract_title(html)
+    if not match:
+        raise ValueError("Ali цена не найдена")
+
+    return float(match.group(1)), _extract_title(html)
 
 
-async def get_price_info(marketplace: str, product_id: str, url: str) -> tuple[float, str | None]:
-    fetchers = {
-        "wb": lambda: _fetch_wb_price(product_id),
-        "ozon": lambda: _fetch_ozon_price(url),
-        "yandex": lambda: _fetch_yandex_price(url),
-        "aliexpress": lambda: _fetch_aliexpress_price(url),
-    }
-    fetcher = fetchers.get(marketplace)
-    if not fetcher:
-        raise ValueError(f"Неподдерживаемый маркетплейс: {marketplace}")
-    return await fetcher()
+async def get_price_info(marketplace: str, product_id: str, url: str):
+    if marketplace == "wb":
+        return await _fetch_wb_price(product_id)
+    if marketplace == "ozon":
+        return await _fetch_ozon_price(url)
+    if marketplace == "yandex":
+        return await _fetch_yandex_price(url)
+    if marketplace == "aliexpress":
+        return await _fetch_aliexpress_price(url)
+
+    raise ValueError("Неизвестный маркетплейс")
 
 
-async def get_price(url: str) -> float:
-    marketplace, product_id = parse_products(url)
-    price, _ = await get_price_info(marketplace, product_id, url)
-    return price
+async def get_price(text: str):
+    parsed = parse_product_input(text)
+    return await get_price_info(parsed.marketplace, parsed.product_id, parsed.url)

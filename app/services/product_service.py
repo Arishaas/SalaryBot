@@ -7,25 +7,30 @@ from app.services.parser import get_price_info, parse_product_input
 async def create_product(db: Session, user_id: int, raw_input: str) -> Product:
     parsed = parse_product_input(raw_input)
 
+    marketplace = parsed.marketplace
+    product_id = parsed.product_id
+    url = parsed.url
+
     existing = (
         db.query(Product)
         .filter(
             Product.user_id == user_id,
-            Product.marketplace == parsed.marketplace,
-            Product.product_id == parsed.product_id,
+            Product.marketplace == marketplace,
+            Product.product_id == product_id,
         )
         .first()
     )
     if existing:
         return existing
 
-    price, title = await get_price_info(parsed.marketplace, parsed.product_id, parsed.url)
+    # ✔ получаем tuple (price, title)
+    price, title = await get_price_info(marketplace, product_id, url)
 
     product = Product(
         user_id=user_id,
-        marketplace=parsed.marketplace,
-        product_id=parsed.product_id,
-        url=parsed.url,
+        marketplace=marketplace,
+        product_id=product_id,
+        url=url,
         title=title,
     )
 
@@ -33,9 +38,15 @@ async def create_product(db: Session, user_id: int, raw_input: str) -> Product:
     db.commit()
     db.refresh(product)
 
+    # ✔ сохраняем цену в историю
     from app.models.price_history import PriceHistory
 
-    db.add(PriceHistory(product_id=product.id, price=price))
+    db.add(
+        PriceHistory(
+            product_id=product.id,
+            price=price
+        )
+    )
     db.commit()
 
     return product
@@ -57,6 +68,7 @@ def delete_product(db: Session, user_id: int, product_id: int) -> bool:
     )
     if not product:
         return False
+
     db.delete(product)
     db.commit()
     return True
